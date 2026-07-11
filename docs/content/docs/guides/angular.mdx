@@ -709,8 +709,16 @@ parameter through an internal `filterParams` helper before handing it to
 
 ### Default behaviour (schema-aware passthrough)
 
-1. **Primitive params** keep the existing nullish-stripping. `null`/`undefined`
-   values are removed, arrays are filtered to primitives only.
+1. **Primitive params** keep the existing nullish-stripping, with one
+   exception: a param the spec declares both `required` and `nullable`.
+   Silently dropping a required param would send a request that violates the
+   OpenAPI contract, so it is never simply removed. Without a
+   `paramsSerializer`, a `null` value for such a param is sent as an empty
+   string (`?key=`) so the key still reaches the wire. With a
+   `paramsSerializer` configured, the literal `null` is passed through for
+   the serializer to encode instead. Optional nullable params are still
+   dropped when `null` — only required-nullable params get this treatment.
+   See [issue #3712](https://github.com/orval-labs/orval/issues/3712).
 2. **Schema-declared object / array-of-object params** are passed through
    untouched **only when a `paramsSerializer` is configured** — that serializer
    is the consumer that turns the raw object into something `HttpParams` can
@@ -794,6 +802,10 @@ you are responsible for:
   invalid)
 - coercing or flattening any object-valued params into a shape `HttpParams`
   understands — or relying on a downstream `paramsSerializer` to do it
+- the required-nullable empty-string fallback described above — opting into
+  `paramsFilter` also replaces that behavior, so if you prefer the old
+  drop-silently semantics for required-nullable params, `paramsFilter` is
+  the escape hatch to restore it
 
 The exact rules the default helper applies — useful as a starting point you
 can adapt:
@@ -802,6 +814,10 @@ can adapt:
 // This is the logic orval emits when no `paramsFilter` is configured.
 // `passthroughKeys` is only non-empty when a `paramsSerializer` is also
 // configured (it carries the schema-declared object/array-of-object keys).
+// `preserveRequiredNullables` is true only when a `paramsSerializer` is
+// configured — that's what lets the literal `null` survive for the
+// serializer to encode; without one, a required-nullable `null` becomes an
+// empty string so the key still reaches the wire (see #3712).
 // Copy/adapt the parts you want; drop the rest.
 type Primitive = string | number | boolean;
 type Value = Primitive | Primitive[] | null;
@@ -809,6 +825,7 @@ type Value = Primitive | Primitive[] | null;
 export const defaultFilter = (
   params: Record<string, unknown>,
   requiredNullableKeys = new Set<string>(),
+  preserveRequiredNullables = false,
   passthroughKeys = new Set<string>(),
 ): Record<string, Value | unknown> => {
   const out: Record<string, Value | unknown> = {};
@@ -827,7 +844,7 @@ export const defaultFilter = (
       );
       if (filtered.length) out[key] = filtered;
     } else if (value === null && requiredNullableKeys.has(key)) {
-      out[key] = null;
+      out[key] = preserveRequiredNullables ? null : '';
     } else if (
       value != null &&
       (typeof value === 'string' ||

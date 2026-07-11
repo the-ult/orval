@@ -13,6 +13,7 @@ import {
   generateBodyOptions,
   generateMutatorConfig,
   generateOptions,
+  getAngularFilteredParamsHelperBody,
 } from './options';
 
 const minimalSchema: GeneratorSchema = {
@@ -403,6 +404,63 @@ describe('generateAxiosOptions', () => {
         '} else if (value === null && requiredNullableParamKeys.has(key)) {',
       );
       expect(result).not.toContain('false &&');
+    });
+
+    it('emits empty-string fallback for required nullable params without a serializer (IIFE path, #3712)', () => {
+      const result = generateAxiosOptions({
+        response: minimalResponse,
+        isExactOptionalPropertyTypes: false,
+        queryParams: minimalSchema,
+        requiredNullableQueryParamKeys: ['requiredNullableParam'],
+        headers: undefined,
+        requestOptions: false,
+        hasSignal: false,
+        isAngular: true,
+        paramsSerializer: undefined,
+        paramsSerializerOptions: undefined,
+      });
+
+      expect(result).toContain(
+        '} else if (value === null && requiredNullableParamKeys.has(key)) {',
+      );
+      expect(result).toContain("filteredParams[key] = '';");
+      expect(result).toContain('new Set<string>(["requiredNullableParam"])');
+      expect(result).toContain(
+        'const filteredParams: Record<string, string | number | boolean | Array<string | number | boolean>> = {};',
+      );
+    });
+
+    it('omits the required-nullable branch when there are no required nullable keys and no serializer', () => {
+      const result = generateAxiosOptions({
+        response: minimalResponse,
+        isExactOptionalPropertyTypes: false,
+        queryParams: minimalSchema,
+        requiredNullableQueryParamKeys: [],
+        headers: undefined,
+        requestOptions: false,
+        hasSignal: false,
+        isAngular: true,
+        paramsSerializer: undefined,
+        paramsSerializerOptions: undefined,
+      });
+
+      expect(result).not.toContain('requiredNullableParamKeys');
+    });
+
+    it('shared filterParams helper falls back to empty string for required nullable keys without a serializer (#3712)', () => {
+      const body = getAngularFilteredParamsHelperBody();
+
+      expect(body).toContain(
+        "filteredParams[key] = preserveRequiredNullables ? null : '';",
+      );
+      expect(body).toContain(
+        'function filterParams(\n' +
+          '  params: Record<string, unknown>,\n' +
+          '  requiredNullableKeys?: ReadonlySet<string>,\n' +
+          '  preserveRequiredNullables?: false,\n' +
+          '  passthroughKeys?: undefined,\n' +
+          '): Record<string, AngularHttpParamValue>;',
+      );
     });
 
     // Issue #3326: schema-declared object/array-of-object query params used to
