@@ -1,6 +1,28 @@
 import { defineConfig } from 'orval';
 
 export default defineConfig({
+  bodySchemaNameMatchesOperationId: {
+    output: {
+      target:
+        '../generated/react-query/body-schema-name-matches-operation-id/endpoints.ts',
+      schemas:
+        '../generated/react-query/body-schema-name-matches-operation-id/model',
+      client: 'react-query',
+      mode: 'tags-split',
+      override: {
+        query: {
+          version: 5,
+          useQuery: true,
+          signal: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/body-schema-name-matches-operation-id.yaml',
+    },
+  },
   issue607: {
     output: {
       target: '../generated/react-query/issue-607/endpoints.ts',
@@ -94,6 +116,7 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/issue-2540/issue-2540.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
     },
   },
   issue2039: {
@@ -1237,7 +1260,10 @@ export default defineConfig({
       clean: true,
       formatter: 'prettier',
     },
-    input: '../specifications/import-from-subdirectory/petstore.yaml',
+    input: {
+      target: '../specifications/import-from-subdirectory/petstore.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
+    },
   },
   deprecated: {
     output: {
@@ -1332,6 +1358,31 @@ export default defineConfig({
       target: '../specifications/models-with-special-char.yaml',
     },
   },
+  // Server-side prefetch: the dehydrated cache must stay serializable.
+  prefetchSerializableHeaders: {
+    output: {
+      target:
+        '../generated/react-query/prefetch-serializable-headers/endpoints.ts',
+      schemas:
+        '../generated/react-query/prefetch-serializable-headers/model',
+      client: 'react-query',
+      httpClient: 'fetch',
+      override: {
+        fetch: {
+          serializeResponseHeaders: true,
+        },
+        query: {
+          useSuspenseQuery: true,
+          usePrefetch: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
   usePrefetchWithFunctionMutator: {
     output: {
       target:
@@ -1405,6 +1456,29 @@ export default defineConfig({
           queryOptions: {
             path: '../mutators/custom-query-options.ts',
             name: 'customQueryOptions',
+          },
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  customQueryKeyMutator: {
+    output: {
+      target: '../generated/react-query/custom-query-key-mutator/endpoints.ts',
+      schemas: '../generated/react-query/custom-query-key-mutator/model',
+      client: 'react-query',
+      headers: true,
+      override: {
+        query: {
+          useInfinite: true,
+          useInfiniteQueryParam: 'limit',
+          queryKey: {
+            path: '../mutators/custom-query-key.ts',
+            name: 'customQueryKey',
           },
         },
       },

@@ -188,7 +188,8 @@ const renderSetQueryDataHelper = ({
 
 /**
  * Renders the prop list shared by `getXxxQueryKey`, `setXxxQueryData` and
- * `getXxxQueryData` helpers: headers are dropped, path params stay required,
+ * `getXxxQueryData` helpers: headers are dropped (unless `includeHeaders`
+ * is set — key-mutator factories need them), path params stay required,
  * non-path params (query params, body) are passed through `widenNonPath`
  * (defaults to identity — pass `makeOptionalParam` or `allowUndefinedParam`
  * to relax the signature).
@@ -201,16 +202,18 @@ const buildKeyShapedProps = ({
   body,
   mutator,
   widenNonPath = (impl) => impl,
+  includeHeaders = false,
 }: {
   props: GetterProps;
   body: GetterBody;
   mutator: GeneratorMutator | undefined;
   widenNonPath?: (impl: string) => string;
+  includeHeaders?: boolean;
 }) =>
   wrapPropsBodyWithMutatorBodyType({
     propsString: toObjectString(
       props
-        .filter((prop) => prop.type !== GetterPropType.HEADER)
+        .filter((prop) => includeHeaders || prop.type !== GetterPropType.HEADER)
         .map((prop) => ({
           ...prop,
           implementation:
@@ -358,9 +361,17 @@ const generatePrefetch = ({
 };
 
 const generateQueryImplementation = ({
-  queryOption: { name, queryParam, options, type, queryKeyFnName },
+  queryOption: {
+    name,
+    typeName: optionTypeName,
+    queryParam,
+    options,
+    type,
+    queryKeyFnName,
+  },
   operationId,
   operationName,
+  typeName,
   queryProperties,
   queryKeyProperties,
   queryParams,
@@ -389,6 +400,7 @@ const generateQueryImplementation = ({
 }: {
   queryOption: {
     name: string;
+    typeName: string;
     options?: object | boolean;
     type: (typeof QueryType)[keyof typeof QueryType];
     queryParam?: string;
@@ -397,6 +409,7 @@ const generateQueryImplementation = ({
   isRequestOptions: boolean;
   operationId: string;
   operationName: string;
+  typeName: string;
   queryProperties: string;
   queryKeyProperties: string;
   params: GetterParams;
@@ -500,7 +513,7 @@ const generateQueryImplementation = ({
   });
 
   const errorType = getQueryErrorType(
-    operationName,
+    typeName,
     response,
     httpClient,
     mutator,
@@ -842,9 +855,9 @@ export function ${queryHookName}<TData = ${TData}, TError = ${errorType}>(\n ${q
 ${queryOptionsFn}
 
 export type ${pascal(
-    name,
+    optionTypeName,
   )}QueryResult = NonNullable<Awaited<ReturnType<${dataType}>>>
-export type ${pascal(name)}QueryError = ${errorType}
+export type ${pascal(optionTypeName)}QueryError = ${errorType}
 
 ${adapter.shouldGenerateOverrideTypes() ? overrideTypes : ''}
 ${doc}
@@ -919,6 +932,7 @@ export const generateQueryHook = async (
   const {
     queryParams,
     operationName,
+    typeName,
     body,
     props: _props,
     verb,
@@ -1064,6 +1078,7 @@ export const generateQueryHook = async (
         ? [
             {
               name: camel(`${operationName}-infinite`),
+              typeName: camel(`${typeName}-infinite`),
               options: query.options,
               type: QueryType.INFINITE,
               queryParam: query.useInfiniteQueryParam,
@@ -1075,6 +1090,7 @@ export const generateQueryHook = async (
         ? [
             {
               name: operationName,
+              typeName,
               options: query.options,
               type: QueryType.QUERY,
               queryKeyFnName: camel(`get-${operationName}-query-key`),
@@ -1085,6 +1101,7 @@ export const generateQueryHook = async (
         ? [
             {
               name: camel(`${operationName}-suspense`),
+              typeName: camel(`${typeName}-suspense`),
               options: query.options,
               type: QueryType.SUSPENSE_QUERY,
               queryKeyFnName: camel(`get-${operationName}-query-key`),
@@ -1095,6 +1112,7 @@ export const generateQueryHook = async (
         ? [
             {
               name: camel(`${operationName}-suspense-infinite`),
+              typeName: camel(`${typeName}-suspense-infinite`),
               options: query.options,
               type: QueryType.SUSPENSE_INFINITE,
               queryParam: query.useInfiniteQueryParam,
@@ -1168,6 +1186,29 @@ ${override.query.shouldExportQueryKey ? 'export ' : ''}const ${queryOption.query
     }
 `;
       }
+    } else if (override.query.shouldExportQueryKey) {
+      // The factories call the mutator the same way the invalidate / set /
+      // get helpers do (`{ url }` second arg). Query options keep their own
+      // inline call — its second arg also carries `queryOptions` — so the
+      // factories are only worth emitting when they are exported. Headers
+      // stay in the signature: the mutator receives them inline and may key
+      // on them, so dropping them would miss the hook's cache entry.
+      for (const queryOption of uniqueQueryOptionsByKeys) {
+        const queryKeyProps = buildKeyShapedProps({
+          props,
+          body,
+          mutator,
+          widenNonPath: makeOptionalParam,
+          includeHeaders: true,
+        });
+
+        queryKeyFns += `
+export const ${queryOption.queryKeyFnName} = (${queryKeyProps}) =>
+    ${queryKeyMutator.name}({ ${queryProperties} }${
+      queryKeyMutator.hasSecondArg ? `, { url: \`${route}\` }` : ''
+    });
+`;
+      }
     }
 
     implementation += `
@@ -1180,6 +1221,7 @@ ${queryKeyFns}`;
         queryOption,
         operationId,
         operationName,
+        typeName,
         queryProperties,
         queryKeyProperties,
         params,

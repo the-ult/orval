@@ -112,8 +112,7 @@ const resolveZodType = (schema: OpenApiSchemaObject): ResolvedZodType => {
     // Filter out 'null' type as it's handled separately via nullable
     const nonNullTypes = schemaTypeValue
       .filter((t): t is string => isString(t))
-      .filter((t) => t !== 'null' && possibleSchemaTypes.has(t))
-      .map((t) => (t === 'integer' ? 'number' : t));
+      .filter((t) => t !== 'null' && possibleSchemaTypes.has(t));
 
     // If multiple types, return a special marker for union handling
     if (nonNullTypes.length > 1) {
@@ -139,14 +138,16 @@ const resolveZodType = (schema: OpenApiSchemaObject): ResolvedZodType => {
     return 'tuple';
   }
 
-  switch (type) {
-    case 'integer': {
-      return 'number';
-    }
-    default: {
-      return type ?? 'unknown';
-    }
+  // Infer type from const value when type is not explicitly specified
+  if (!type && 'const' in schema) {
+    const constValue = schema.const;
+    if (isString(constValue)) return 'string';
+    if (isNumber(constValue)) return 'number';
+    if (isBoolean(constValue)) return 'boolean';
+    if (constValue === null) return 'null';
   }
+
+  return type ?? 'unknown';
 };
 
 // https://github.com/colinhacks/zod#coercion-for-primitives
@@ -188,7 +189,7 @@ export interface ZodValidationSchemaDefinition {
   consts: string[];
 }
 
-const minAndMaxTypes = new Set(['number', 'string', 'array']);
+const minAndMaxTypes = new Set(['number', 'integer', 'string', 'array']);
 
 const removeReadOnlyProperties = (
   schema: OpenApiSchemaObject,
@@ -291,6 +292,36 @@ const isPlainObjectSchema = (
     schema.type === 'object' ||
     (isObject(schema.properties) && Object.keys(schema.properties).length > 0)
   );
+};
+
+// Keywords a member may carry while still describing no shape of its own:
+// `title` and `description` only annotate, and `not` is not translated into
+// anything by this generator today, so a branch carrying one renders as bare
+// `zod.unknown()` either way. Anything outside this set — `enum`, `const`,
+// `additionalProperties`, `nullable`, `default`, … — already renders to
+// something meaningful on its own and must be left alone.
+const SHAPELESS_MEMBER_KEYS = new Set([
+  'required',
+  'title',
+  'description',
+  'not',
+]);
+
+// A `oneOf`/`anyOf` member that declares no shape of its own and only narrows
+// which of the sibling properties must be present — e.g. two branches that each
+// `required` a different pair of keys. JSON Schema applies every branch to the
+// same instance, so the property types live on the composing schema rather than
+// on the branch. Rendered in isolation such a member has no type to resolve and
+// falls through to `zod.unknown()`, silently dropping its `required`. (#3780)
+const isConstraintOnlyMember = (
+  member: OpenApiSchemaObject | OpenApiReferenceObject,
+): boolean => {
+  if ('$ref' in member) return false;
+  const schema = member as OpenApiSchemaObject;
+  if (!Array.isArray(schema.required) || schema.required.length === 0) {
+    return false;
+  }
+  return Object.keys(schema).every((key) => SHAPELESS_MEMBER_KEYS.has(key));
 };
 
 // The branch must declare the discriminator key as a literal value — a `const`
@@ -747,11 +778,48 @@ export const generateZodValidationSchemaDefinition = (
         ]
       : undefined;
 
+    // Constraint-only branches have to be rendered against the composing
+    // schema's `properties`, otherwise their `required` is lost. Only for
+    // `oneOf`/`anyOf` — an `allOf` member already gets the same effect through
+    // `additionalRequired` above. (#3780)
+    const withSiblingProperties = (
+      member: OpenApiSchemaObject | OpenApiReferenceObject,
+    ) => {
+      const properties = schema.properties;
+      if (
+        !(schema.oneOf || schema.anyOf) ||
+        !isObject(properties) ||
+        Object.keys(properties).length === 0 ||
+        !isConstraintOnlyMember(member)
+      ) {
+        return member as OpenApiSchemaObject;
+      }
+
+      const required = (member as OpenApiSchemaObject).required as string[];
+
+      // Every key the branch requires needs a sibling schema to attach to. A key
+      // with none cannot be made required in zod — both `unknown` and `any` are
+      // treated as optional inside an object, so `{}` would still match — and
+      // rewriting would silently drop it. Leave the whole branch as-is rather
+      // than emit an object that only looks like it enforces the constraint.
+      if (!required.every((key) => Object.hasOwn(properties, key))) {
+        return member as OpenApiSchemaObject;
+      }
+
+      return {
+        type: 'object',
+        properties,
+        required,
+        // carried over so the branch keeps its `.describe(...)`
+        description: (member as OpenApiSchemaObject).description,
+      } as OpenApiSchemaObject;
+    };
+
     // Use index-based naming to ensure uniqueness when processing multiple schemas
     // This prevents duplicate schema names when nullable refs are used
     const baseSchemas = schemas.map((schema, index) =>
       generateZodValidationSchemaDefinition(
-        schema as OpenApiSchemaObject,
+        withSiblingProperties(schema),
         context,
         `${camel(name)}${pascal(getNumberWord(index + 1))}`,
         strict,
@@ -1127,6 +1195,19 @@ export const generateZodValidationSchemaDefinition = (
         break;
       }
       default: {
+        // Handle const for number, boolean, null, and object types
+        if ('const' in schema) {
+          const constValue = schema.const;
+          if (
+            isNumber(constValue) ||
+            isBoolean(constValue) ||
+            constValue === null
+          ) {
+            functions.push(['literal', constValue]);
+            break;
+          }
+        }
+
         const hasProperties = !!schema.properties;
         const properties = schema.properties ?? {};
         const hasDefinedProperties = Object.keys(properties).length > 0;
@@ -1222,7 +1303,7 @@ export const generateZodValidationSchemaDefinition = (
           break;
         }
 
-        functions.push([type, undefined]);
+        functions.push([type === 'integer' ? 'int' : type, undefined]);
 
         break;
       }
@@ -1420,6 +1501,7 @@ export const parseZodValidationSchemaDefinition = (
   preprocess?: GeneratorMutator,
   paramsInjection?: ZodParamsInjection,
   variant: ZodVariantOption = 'classic',
+  exactOptional = false,
 ): { zod: string; consts: string; usedRefs: Set<string> } => {
   if (input.functions.length === 0) {
     return { zod: '', consts: '', usedRefs: new Set() };
@@ -1756,9 +1838,23 @@ ${Object.entries(objectArgs)
 
       const combinedArgs = buildCombinedArgs(fn, args, fieldPath);
 
+      if (fn === 'int' && shouldCoerce('number')) {
+        const numberArgs = buildCombinedArgs('number', undefined, fieldPath);
+        current = {
+          expr: zodMiniCall(
+            'pipe',
+            `${zodMiniCoerceCall('number', numberArgs)}, ${zodMiniCall('int', combinedArgs)}`,
+          ),
+          kind: 'number',
+        };
+        continue;
+      }
+
       if (fn === 'optional' || fn === 'nullable' || fn === 'nullish') {
         const value = requireCurrent(fn);
-        current = { expr: zodMiniCall(fn, value.expr), kind: value.kind };
+        const miniFn =
+          exactOptional && isZodV4 && fn === 'optional' ? 'exactOptional' : fn;
+        current = { expr: zodMiniCall(miniFn, value.expr), kind: value.kind };
         continue;
       }
 
@@ -1821,9 +1917,11 @@ ${Object.entries(objectArgs)
       current = {
         expr: zodMiniCall(fn, combinedArgs),
         kind:
-          fn === 'enum' || fn === 'literal' || fn === 'stringFormat'
-            ? 'string'
-            : fn.split('.')[0],
+          fn === 'int'
+            ? 'number'
+            : fn === 'enum' || fn === 'literal' || fn === 'stringFormat'
+              ? 'string'
+              : fn.split('.')[0],
       };
     }
 
@@ -2139,11 +2237,28 @@ ${Object.entries(objectArgs)
       combinedArgs = formattedArgs;
     }
 
+    if (fn === 'int') {
+      const numberArgs = buildCombinedArgs('number', undefined, fieldPath);
+      if (shouldCoerce('number')) {
+        return `.coerce.number(${numberArgs}).int(${combinedArgs})`;
+      }
+      if (!isZodV4) {
+        return `.number(${numberArgs}).int(${combinedArgs})`;
+      }
+    }
+
     if (
       (fn !== 'date' && shouldCoerceType) ||
       (fn === 'date' && shouldCoerceType && context.output.override.useDates)
     ) {
       return `.coerce.${fn}(${combinedArgs})`;
+    }
+
+    // `.exactOptional()` (zod v4 only) narrows an optional property to `{ x?: T }`
+    // for `exactOptionalPropertyTypes` consumers. Zod v3 has no such method, so
+    // the flag no-ops there and a plain `.optional()` is emitted.
+    if (exactOptional && isZodV4 && fn === 'optional') {
+      return '.exactOptional()';
     }
 
     return `.${fn}(${combinedArgs})`;
@@ -2917,7 +3032,13 @@ export const parseParameters = ({
 };
 
 const generateZodRoute = async (
-  { operationId, operationName, verb, override }: GeneratorVerbOptions,
+  {
+    operationId,
+    operationName,
+    typeName,
+    verb,
+    override,
+  }: GeneratorVerbOptions,
   { pathRoute, context, output }: GeneratorOptions,
 ) => {
   const zodVariant = context.output.override.zod.variant;
@@ -2999,7 +3120,7 @@ const generateZodRoute = async (
       })
     : undefined;
 
-  const pascalOperationName = pascal(operationName);
+  const pascalTypeName = pascal(typeName);
   const makeParamsInjection = (
     location: ZodParamsInjection['location'],
     schemaSuffix: string,
@@ -3009,7 +3130,7 @@ const generateZodRoute = async (
           mutator: paramsMutator,
           operationId,
           location,
-          schemaName: `${pascalOperationName}${schemaSuffix}`,
+          schemaName: `${pascalTypeName}${schemaSuffix}`,
         }
       : undefined;
 
@@ -3022,6 +3143,7 @@ const generateZodRoute = async (
     preprocessParams,
     makeParamsInjection('param', 'Params'),
     zodVariant,
+    override.zod.exactOptional,
   );
 
   const preprocessQueryParams = override.zod.preprocess?.query
@@ -3043,6 +3165,7 @@ const generateZodRoute = async (
     preprocessQueryParams,
     makeParamsInjection('query', 'QueryParams'),
     zodVariant,
+    override.zod.exactOptional,
   );
 
   const preprocessHeader = override.zod.preprocess?.header
@@ -3064,6 +3187,7 @@ const generateZodRoute = async (
     preprocessHeader,
     makeParamsInjection('header', 'Header'),
     zodVariant,
+    override.zod.exactOptional,
   );
 
   const preprocessBody = override.zod.preprocess?.body
@@ -3085,6 +3209,7 @@ const generateZodRoute = async (
     preprocessBody,
     makeParamsInjection('body', 'Body'),
     zodVariant,
+    override.zod.exactOptional,
   );
 
   const preprocessResponse = override.zod.preprocess?.response
@@ -3110,6 +3235,7 @@ const generateZodRoute = async (
         responses[index][0] ? `${responses[index][0]}Response` : 'Response',
       ),
       zodVariant,
+      override.zod.exactOptional,
     ),
   );
 
@@ -3225,14 +3351,14 @@ const generateZodRoute = async (
     return candidate;
   };
 
-  const paramsName = allocateExportName(`${pascalOperationName}Params`, false);
+  const paramsName = allocateExportName(`${pascalTypeName}Params`, false);
   const queryParamsName = allocateExportName(
-    `${pascalOperationName}QueryParams`,
+    `${pascalTypeName}QueryParams`,
     false,
   );
-  const headerName = allocateExportName(`${pascalOperationName}Header`, false);
+  const headerName = allocateExportName(`${pascalTypeName}Header`, false);
   const bodyName = allocateExportName(
-    `${pascalOperationName}Body`,
+    `${pascalTypeName}Body`,
     parsedBody.isArray,
   );
 
@@ -3267,7 +3393,7 @@ export const ${bodyName} = ${zodArrayWithBounds(bodyName + 'Item', parsedBody.ru
         : []),
       ...inputResponses.flatMap((inputResponse, index) => {
         const operationResponse = allocateExportName(
-          pascal(`${operationName}-${responses[index][0]}-response`),
+          pascal(`${typeName}-${responses[index][0]}-response`),
           parsedResponses[index].isArray,
         );
 
