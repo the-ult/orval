@@ -432,6 +432,22 @@ export default defineConfig({
       target: '../specifications/msw-mixed-content-union-vendor.yaml',
     },
   },
+  mswProblemDetailsContentType: {
+    output: {
+      target:
+        '../generated/mock/msw-problem-details-content-type/endpoints.ts',
+      schemas: '../generated/mock/msw-problem-details-content-type/model',
+      client: 'axios',
+      mock: {
+        generators: [{ type: 'msw', generateEachHttpStatus: true }],
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/msw-problem-details-content-type.yaml',
+    },
+  },
   issue2327: {
     output: {
       target: '../generated/mock/issue-2327/endpoints.ts',
@@ -853,6 +869,43 @@ export default defineConfig({
       target: '../specifications/msw-array-items.yaml',
     },
   },
+  issue3706MswArrayItemAliases: {
+    output: {
+      target: '../generated/mock/issue-3706-msw-array-item-aliases/endpoints.ts',
+      schemas: '../generated/mock/issue-3706-msw-array-item-aliases/model',
+      client: 'fetch',
+      mock: {
+        generators: [{ type: 'msw', arrayItems: true, delay: false }],
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3706-msw-unexported-item-aliases.yaml',
+    },
+  },
+  issue3706MswArrayItemAliasesStrict: {
+    output: {
+      target:
+        '../generated/mock/issue-3706-msw-array-item-aliases-strict/endpoints.ts',
+      schemas: '../generated/mock/issue-3706-msw-array-item-aliases-strict/model',
+      client: 'fetch',
+      mock: {
+        generators: [{ type: 'msw', arrayItems: true, delay: false }],
+      },
+      override: {
+        mock: {
+          required: true,
+          nonNullable: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3706-msw-unexported-item-aliases.yaml',
+    },
+  },
   issue3574StrictMockTagsSplitAngular: {
     output: {
       target:
@@ -964,6 +1017,40 @@ export default defineConfig({
         generators: [{ type: 'msw' }, { type: 'faker' }],
       },
       mode: 'split',
+      client: 'axios',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  // `operationResponses: false` on the msw generator: handlers only, no
+  // response mock factories. Fallback responses become `undefined`.
+  splitMswHandlersOnly: {
+    output: {
+      target: '../generated/mock/split-msw-handlers-only/endpoints.ts',
+      schemas: '../generated/mock/split-msw-handlers-only/model',
+      mock: {
+        generators: [{ type: 'msw', operationResponses: false }],
+      },
+      mode: 'split',
+      client: 'axios',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  tagsSplitMswHandlersOnly: {
+    output: {
+      target: '../generated/mock/tags-split-msw-handlers-only/endpoints.ts',
+      schemas: '../generated/mock/tags-split-msw-handlers-only/model',
+      mock: {
+        generators: [{ type: 'msw', operationResponses: false }],
+      },
+      mode: 'tags-split',
       client: 'axios',
       clean: true,
       formatter: 'prettier',

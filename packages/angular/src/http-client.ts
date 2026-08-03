@@ -13,6 +13,7 @@ import {
   generateVerbImports,
   type GeneratorVerbOptions,
   getAngularFilteredParamsHelperBody,
+  getAngularObjectParamStrategies,
   getDefaultContentType,
   getEnumImplementation,
   getIsBodyVerb,
@@ -132,8 +133,8 @@ export const getAngularDependencies: ClientDependenciesBuilder = () => [
  *
  * @returns A PascalCase helper type/const name for the operation's `Accept` values.
  */
-export const getAcceptHelperName = (operationName: string) =>
-  `${pascal(operationName)}Accept`;
+export const getAcceptHelperName = (typeName: string) =>
+  `${pascal(typeName)}Accept`;
 
 /**
  * Collects the distinct successful response content types for a single
@@ -155,11 +156,11 @@ const toAcceptHelperKey = (contentType: string): string =>
     .toLowerCase();
 
 const buildAcceptHelper = (
-  operationName: string,
+  typeName: string,
   contentTypes: string[],
   output: ContextSpec['output'],
 ): string => {
-  const acceptHelperName = getAcceptHelperName(operationName);
+  const acceptHelperName = getAcceptHelperName(typeName);
   const unionValue = contentTypes
     .map((contentType) => `'${contentType}'`)
     .join(' | ');
@@ -200,9 +201,7 @@ export const buildAcceptHelpers = (
       );
       if (contentTypes.length <= 1) return [];
 
-      return [
-        buildAcceptHelper(verbOption.operationName, contentTypes, output),
-      ];
+      return [buildAcceptHelper(verbOption.typeName, contentTypes, output)];
     })
     .join('\n\n');
 
@@ -237,6 +236,20 @@ export const generateAngularHeader: ClientHeaderBuilder = ({
   const hasBuiltInFilteredQueryParams = relevantVerbs.some(
     (v) => v.queryParams && !v.paramsFilter,
   );
+  // The helper only needs the object-serialization overload (issue #3705)
+  // when at least one relevant operation actually has a gated strategy to
+  // apply — keeping the base helper byte-identical everywhere else.
+  const hasObjectParams = relevantVerbs.some(
+    (v) =>
+      Object.keys(
+        getAngularObjectParamStrategies({
+          queryParams: v.queryParams,
+          paramsSerializer: v.paramsSerializer,
+          paramsFilter: v.paramsFilter,
+          queryObjectSerialization: v.override.angular.queryObjectSerialization,
+        }),
+      ).length > 0,
+  );
   const acceptHelpers = buildAcceptHelpers(relevantVerbs, output);
 
   return `
@@ -246,7 +259,7 @@ ${
 
 ${HTTP_CLIENT_OBSERVE_OPTIONS_TEMPLATE}
 
-${hasBuiltInFilteredQueryParams ? getAngularFilteredParamsHelperBody() : ''}`
+${hasBuiltInFilteredQueryParams ? getAngularFilteredParamsHelperBody({ hasObjectParams }) : ''}`
     : ''
 }
 
@@ -306,6 +319,7 @@ export const generateHttpClientImplementation = (
     headers,
     queryParams,
     operationName,
+    typeName,
     response,
     mutator,
     body,
@@ -404,7 +418,7 @@ export const generateHttpClientImplementation = (
   returnTypesRegistry.set(
     operationName,
     `export type ${pascal(
-      operationName,
+      typeName,
     )}ClientResult = NonNullable<${resultAliasType}>`,
   );
 
@@ -452,11 +466,23 @@ export const generateHttpClientImplementation = (
   `;
   }
 
+  // Object-typed query param serialization (issue #3705), already gated for
+  // `override.angular.queryObjectSerialization`, `paramsFilter`, and
+  // `paramsSerializer` — computed once and forwarded verbatim everywhere a
+  // filter expression is built below.
+  const objectParamStrategies = getAngularObjectParamStrategies({
+    queryParams,
+    paramsSerializer,
+    paramsFilter,
+    queryObjectSerialization: override.angular.queryObjectSerialization,
+  });
+
   const optionsBase = {
     route,
     body,
     headers,
     queryParams,
+    objectQueryParamStrategies: objectParamStrategies,
     response,
     verb,
     requestOptions: override.requestOptions,
@@ -476,7 +502,7 @@ export const generateHttpClientImplementation = (
   const uniqueContentTypes = getUniqueContentTypes(successTypes);
   const hasMultipleContentTypes = uniqueContentTypes.length > 1;
   const acceptTypeName = hasMultipleContentTypes
-    ? getAcceptHelperName(operationName)
+    ? getAcceptHelperName(typeName)
     : undefined;
 
   const needsObserveBranching = isRequestOptions && !hasMultipleContentTypes;
@@ -499,6 +525,7 @@ export const generateHttpClientImplementation = (
       nonPrimitiveKeys: paramsSerializer
         ? (queryParams.nonPrimitiveKeys ?? [])
         : [],
+      objectParamStrategies,
       paramsFilter,
       // Request-options path uses the shared `filterParams` helper emitted in
       // the file header; the non-request-options path inlines an IIFE.

@@ -98,6 +98,7 @@ function createMockContext(): ContextSpec {
           provideIn: 'root',
           client: 'httpClient',
           runtimeValidation: false,
+          queryObjectSerialization: 'spec',
         },
         swr: {},
         zod: {
@@ -129,6 +130,7 @@ function createMockContext(): ContextSpec {
           generateReusableSchemas: false,
           generateMeta: false,
           generateDiscriminatedUnion: false,
+          exactOptional: false,
           dateTimeOptions: {},
           timeOptions: { precision: 3 },
         },
@@ -149,10 +151,12 @@ function createMockContext(): ContextSpec {
           },
           generateEachHttpStatus: false,
           useBrandedTypes: false,
+          exactOptional: false,
         },
         fetch: {
           includeHttpResponseReturnType: false,
           forceSuccessResponse: false,
+          serializeResponseHeaders: false,
           runtimeValidation: false,
           useRuntimeFetcher: false,
         },
